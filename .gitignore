@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# build artifacts and audit scratch - never commit these
+*-build/
+*.dump
+*.report.json
+cprof/
+node_modules/
