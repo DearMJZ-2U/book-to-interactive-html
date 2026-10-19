@@ -402,6 +402,156 @@ is only for leading text that precedes any heading.
 Symptom to watch for: the chapter count comes back `1` on a document that
 plainly has several headings.
 
+### H12. ★★ A line list is not prose — the fact pack must be rebuilt into paragraphs
+**Cause.** The usual OCR recipe sorts boxes by `(round(y/12), x)` and joins with
+newlines. That gives lines, and a pack built from it cuts every sentence at the
+printed line width:
+
+```
+（世界发展指标）数据库的统计，2008年东亚及太平洋地区（含东
+南亚）的制造业增加值约占全球的33.94%，中国当时的全球占比
+为11.3%；2024年，该地区这一比重增加到42.58%，中国的全球
+```
+
+A writer reading that cannot tell a paragraph break from a line wrap, so it
+either quotes half a sentence or invents the join. Nothing in the pipeline
+catches this: the pack is "complete", every number is present, and the prose
+still reads wrong.
+**Fix.** Keep each line's `x0`/`x1` and rebuild paragraphs geometrically — a
+line that **starts indented** opens a paragraph, a line that **stops short of
+the right margin** (and does not end in `，、：（；`) closes one. Joining on
+punctuation alone fails on every line that ends mid-clause. `scripts/ocr_lines.py`
+does this; build the packs from `raw/paragraphs.txt`.
+**Sanity number.** 418 pages → 11 650 lines → **2 552 paragraphs**. If your
+paragraph count is near your line count, the rebuild did nothing.
+
+### H13. ★★ Figure and table captions sit on opposite sides of the plate
+**Cause.** In 《缠斗》 every 图N.M caption is printed **below** its chart and
+every 表N.M caption **above** its table. Hard-coding either convention crops the
+wrong side for half the book — and the crops still look plausible, because the
+region above a figure caption is usually *some* content.
+**Fix.** Propose both sides, bound each by the nearest PROSE line, and let the
+caption's own kind decide which side is preferred; ink only breaks ties within
+a side. See `scripts/crop_plates.py`.
+
+### H14. ★★ "Long line" is not "prose" — it puts the crop edge through the axis labels
+**Cause.** A chart's tick row (`51015202530354045…`) and its axis caption are
+long, wide and start near the margin. A prose test based on line length alone
+accepts them, so the plate's top edge lands in the middle of its own labels.
+**Fix.** Three tests, all required: **≥12 CJK characters** (a tick row has
+none, a table row has one or two), **runs ≥50 % of the column**, and **starts at
+the page's body margin** (the modal `x0` of wide lines). The CJK count is the
+one that separates a paragraph from the table grid underneath a 表N.M caption —
+both start at the margin and run the full column, so geometry alone cannot.
+
+### H15. ★ OCR glues the caption label to its title, and the number parses wrong
+**Cause.** `图1.13　1美元兑人民币汇率` arrives as `图1.131美元兑人民币汇率` and
+parses as **figure 1.131**. Every later number in the chapter shifts.
+**Fix.** Assign figure numbers by **sequence within the chapter**, not by
+trusting the split. A candidate whose leftover text starts with a digit
+(`008年…`) cannot be a title; `2008年…` can. A continuation caption
+(`图1.6…（续）`) **repeats** the previous number rather than advancing — counting
+it as new pushes everything after it up by one.
+
+### H16. ★ A running header gets swallowed by any plate that fills the page top
+**Cause.** When a figure occupies the upper half of a page there is no prose
+above it, so the nearest-prose search returns the page margin and the crop
+starts at the very top — including `缠斗：中美经贸重构与全球经济新秩序`.
+Geometry cannot distinguish "plate" from "plate plus header".
+**Fix.** Bound the crop's upper edge by the **header's own bottom**, computed as
+the last row inside the top ~8 % of the page. And **look at three or four
+crops**: this one was invisible in every number and obvious in the images.
+
+---
+
+## I. Gates that report success for work they never did
+
+### I1. ★★★ The probe crashed and the gate called it a pass
+**Cause.** The reader probe had another book's section id hard-coded. It threw
+on the first assertion, `--dump-dom` returned no report, `readercheck.py`
+crashed, and `check_all.py` did this:
+
+```python
+for line in rc.splitlines():          # rc is a traceback: zero matching lines
+    if line.startswith("  !!"): check(False, ...)
+    elif line.startswith("  --"): check(True, ...)   # body never runs
+```
+
+Every check that was never executed was reported as passing, and the run printed
+**"all checks passed"**.
+**Fix.** Require a positive signal, never the absence of a negative one:
+```python
+m = re.search(r"(\d+)/(\d+) reader-control checks passed", rc)
+check(m is not None, "probe produced a verdict list (%d bytes)" % len(rc))
+if m: check(m.group(1) == m.group(2) and int(m.group(2)) >= 20, ...)
+```
+Generalised: **a stage must assert that it produced output, and how much.**
+
+### I2. ★★ A checker that can only fail is as useless as one that can only pass
+**Cause.** `check_captions.py` reported **all 83** captions as wrong. The checker
+was broken twice: it matched only `图N.M` (this book labels tables `表N.M`), and
+it compared the whole caption including the reader-facing suffix
+`· 点击可放大`.
+**Fix.** When failure is 100 % across unrelated content, suspect the checker.
+Print the first mismatched pair and read it before touching the content.
+
+### I3. ★ Measuring an element that cannot carry the property
+**Cause.** The night-mode assertion read `querySelector("svg.chart [fill]")` and
+required the colour to change. The first match is a line path with
+`fill="none"` — not a colour, never remapped — so a correct implementation
+failed.
+**Fix.** Walk until you find a node whose attribute is actually a hex colour.
+Same family as D4/D7: the measurement was fine, the subject was wrong.
+
+### I4. ★ A reused probe silently tests the previous book
+**Cause.** The inherited probe hard-coded that book's section id (`c12`), TOC
+label (`第12章`), search term (`毕生发展观`), storage prefix (`hbj:`) and palette.
+Even if it had not crashed, it would have been testing the wrong contract.
+**Fix.** Generate a fresh probe per book and derive ids from the document at
+runtime: `scripts/make_reader_probe.py --term 关税 --latin gdp --storage cd:`.
+
+### I5. ★ Two Chrome processes sharing one profile render a blank page
+**Cause.** Screenshots shared `--user-data-dir`. A lingering Chrome from the
+previous shot held the profile lock, so the next one produced a 9 kB
+paper-coloured PNG — which reads as "the page is blank", not "the capture
+failed".
+**Fix.** One profile directory per capture, removed afterwards. And treat an
+implausibly small screenshot (< 50 kB for a full page) as a failure, not a
+result.
+
+### I6. ★★★ A fix applied to generated output is silently reverted by the next build
+**Cause.** The gate flagged eight low-contrast labels. I fixed them by editing
+`frag/*.html` — the files the assembler reads — and the gate went green. Much
+later, a routine `expand.py` run regenerated those fragments **from `frag/*.src`**
+and every fix vanished. The same thing happened to a note-numbering repair:
+`notechk` went from 0 problems to 5 the moment the fragments were re-expanded.
+
+Nothing warned. The `.html` is not the source; it is a build artifact with the
+same extension as the hand-written files, which is exactly why the mistake is
+easy.
+
+**Fix, in two parts.**
+1. **Know which files are generated.** `expand.py` prints
+   `hand-written (no .src, left untouched): c04 guide hero` — anything *not* in
+   that list is generated and must never be edited.
+2. **Make the build prove it.** After editing, re-expand and re-audit. If a fix
+   survives `expand.py` + `assemble.py`, it is in the source; if the gate goes
+   red again, it was in the output.
+
+A useful habit: any repair script should open `frag/<CID>.src`, never
+`frag/<CID>.html`. If a fix cannot be expressed in the `.src`, the shortcut
+layer is missing a case — add one.
+
+### I7. ★ Deleting "scratch" can delete the input
+**Cause.** A cleanup pass that removed audit artifacts by wildcard also removed
+the source PDF from the project root. It was recoverable from the Recycle Bin,
+but the next script run failed with a mojibake `FileNotFoundError` that looked
+like an encoding bug — the CJK filename had been mangled *because the file was
+not there*.
+**Fix.** Never wildcard-delete at the project root. Clean inside the build
+directory (`_audit/`, `cprof/`, `*.dump`), and confirm the input still exists
+before blaming encoding for a missing-file error.
+
 ---
 
 ## The meta-lesson
@@ -413,3 +563,8 @@ second way — counting independently, opening the actual source, toggling the
 palette and re-measuring, or simply *running the extractor against a real
 file* instead of trusting that it should work. If a check can only ever pass,
 it isn't a check.
+
+The 《缠斗》 run added the mirror image: **a gate can also report success for work
+it never did** (I1). An empty result set, a crashed sub-process, a probe aimed at
+the wrong book — all of them produce the same green summary. The defence is the
+same in both directions: assert a *count*, and make zero a failure.
